@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "GPMSelenium Record & Flow",
+  "version": "1.0.0",
+  "description": "Fallback recorder for GPMSelenium scout workflows with checkpoints, selectors, Shadow DOM, and lightweight network metadata.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["<all_urls>", "http://localhost:9999/*", "http://127.0.0.1:9999/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "Record & Flow",
+    "default_popup": "popup.html"
+  }
+}

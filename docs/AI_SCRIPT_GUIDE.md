@@ -103,6 +103,34 @@ if still failing:
 
 Selector failures should fail at node timeout, not page timeout.
 
+### Block Timeouts & Error Throwing
+
+Use dynamic block timeouts when a specific node needs a different wait budget than the GUI default.
+
+```python
+otp_input = context.node_wait(timeout=60).until(
+    expected.visibility_of_element_located((By.CSS_SELECTOR, "input[name='otp']"))
+)
+```
+
+Use shorter waits for optional popups or quick probes:
+
+```python
+maybe_modal = context.node_wait(timeout=3).until(
+    expected.visibility_of_element_located((By.CSS_SELECTOR, "[data-testid='modal']"))
+)
+```
+
+Business conditions must be raised as errors from helper functions instead of returning `fail(...)` deep inside the helper layer. The runner catches intentional `RuntimeError` values, logs them as business errors, captures debug artifacts when enabled, closes the profile, and records the row as failed.
+
+```python
+def ensure_account_can_run(balance: float, minimum_balance: float) -> None:
+    if balance < minimum_balance:
+        raise RuntimeError(f"Insufficient balance; balance={balance}; minimum_balance={minimum_balance}")
+```
+
+Only the task entrypoint should convert expected block failures into `TaskResult` when it owns the block state. Helper libraries should raise clear `RuntimeError` messages with enough context to debug the business condition.
+
 ## Core-Gated Debug Artifacts
 
 Debug artifact enforcement lives in `TaskContext`, not in task scripts. `context.screenshot(...)` and `context.save_html(...)` read `context.config["enable_debug_artifacts"]` internally.
@@ -189,6 +217,8 @@ def run(context: TaskContext, row: dict[str, object]) -> TaskResult:
         current_block = "VERIFY_BLOCK"
         wait_success(context)
         return ok(STATUS_SUCCESS, {"email": email, "url": context.driver.current_url})
+    except RuntimeError:
+        raise
     except Exception as error:
         status: str = f"FAIL_AT_{current_block}: {type(error).__name__}: {error}"
         return fail(status, status, failure_data(context, current_block, {"email": email}))

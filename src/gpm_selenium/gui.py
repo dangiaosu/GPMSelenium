@@ -58,6 +58,7 @@ from gpm_selenium.runner import RuntimeConfig, default_runtime_config, run_selec
 from gpm_selenium.session_cache import load_profiles, save_profiles
 from gpm_selenium.store import PlatformStore, RegisteredTask
 from gpm_selenium.task_loader import LoadedTask, load_task
+from gpm_selenium.ui_kit import HEADER_SIDE_WIDTH, run_status_display_text
 
 
 class GeometricWolfLogo(QWidget):
@@ -195,7 +196,9 @@ class MainWindow(QMainWindow):
 
         self.use_excel_checkbox = QCheckBox("Use Excel input/status")
         self.use_excel_checkbox.setChecked(True)
-        self.excel_path_input = QLineEdit()
+        self.excel_path_input = QLineEdit(
+            r"C:\Users\Admin\Desktop\CodeLinhTinh\NewProject\GPMSelenium\Metamask_Script\data.xlsx"
+        )
         self.preview_label = QLabel("No Excel selected")
         self.worker_spin = QSpinBox()
         self.worker_spin.setRange(1, 20)
@@ -211,6 +214,10 @@ class MainWindow(QMainWindow):
         self.retry_spin.setValue(1)
         self.debug_artifacts_checkbox = QCheckBox("Save debug artifacts on failure")
         self.debug_artifacts_checkbox.setChecked(False)
+        self.dynamic_args_group = QGroupBox("Task Arguments")
+        self.dynamic_args_layout = QFormLayout(self.dynamic_args_group)
+        self.dynamic_arg_widgets: dict[str, QWidget] = {}
+        self.dynamic_args_group.setVisible(False)
         self.window_width_spin = QSpinBox()
         self.window_width_spin.setRange(200, 4000)
         self.window_width_spin.setValue(800)
@@ -225,7 +232,7 @@ class MainWindow(QMainWindow):
         self.run_status_label = QLabel("Idle")
         self.run_status_label.setObjectName("StatusPill")
         self.run_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.run_status_label.setFixedSize(96, 48)
+        self.run_status_label.setFixedSize(HEADER_SIDE_WIDTH, 48)
         self.start_button = QPushButton("Start Run")
         self.start_button.setObjectName("PrimaryButton")
         self.start_button.clicked.connect(self._start_run)
@@ -277,7 +284,6 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._run_tab(), "Run Setup")
         self.tabs.addTab(self._monitor_tab(), "Run Monitor")
         self.tabs.addTab(self._history_tab(), "Run History")
-        self.tabs.addTab(self._settings_tab(), "Settings")
         self.tabs.setCurrentIndex(3)
         root_layout.addWidget(self.tabs, 1)
         self.setCentralWidget(root)
@@ -291,7 +297,7 @@ class MainWindow(QMainWindow):
 
         left_balance = QWidget()
         left_balance.setObjectName("HeaderBalance")
-        left_balance.setFixedSize(96, 48)
+        left_balance.setFixedSize(HEADER_SIDE_WIDTH, 48)
 
         brand_container = QWidget()
         brand_container.setObjectName("HeaderContent")
@@ -396,6 +402,7 @@ class MainWindow(QMainWindow):
         detail_layout.addWidget(self.script_description_label)
         detail_layout.addWidget(self._script_meta_block("Module path", self.script_module_label))
         detail_layout.addWidget(self._script_meta_block("Required Excel columns", self.script_columns_label))
+        detail_layout.addWidget(self.dynamic_args_group)
         detail_layout.addStretch(1)
 
         layout.addWidget(left_panel, 1)
@@ -454,6 +461,10 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(container)
         layout.setSpacing(14)
 
+        input_group = QGroupBox("Input Source")
+        input_layout = QVBoxLayout(input_group)
+        input_layout.setContentsMargins(12, 12, 12, 12)
+        input_layout.setSpacing(10)
         file_row = QHBoxLayout()
         browse_button = QPushButton("Browse Excel")
         browse_button.clicked.connect(self._browse_excel)
@@ -463,26 +474,35 @@ class MainWindow(QMainWindow):
         file_row.addWidget(self.excel_path_input, 1)
         file_row.addWidget(browse_button)
         file_row.addWidget(preview_button)
+        input_layout.addLayout(file_row)
+        input_layout.addWidget(self.preview_label)
 
-        config_group = QGroupBox("Run Config")
-        form = QFormLayout(config_group)
-        form.addRow("Workers", self.worker_spin)
-        form.addRow("Retry count", self.retry_spin)
-        form.addRow("Debug artifacts", self.debug_artifacts_checkbox)
-        form.addRow("Node timeout seconds", self.node_timeout_spin)
-        form.addRow("Page/result timeout seconds", self.timeout_spin)
-        form.addRow("Window width", self.window_width_spin)
-        form.addRow("Window height", self.window_height_spin)
-        form.addRow("Window scale", self.window_scale_spin)
+        execution_group = QGroupBox("Execution")
+        execution_form = QFormLayout(execution_group)
+        execution_form.addRow("GPM base URL", self.gpm_url_input)
+        execution_form.addRow("Workers", self.worker_spin)
+        execution_form.addRow("Retry count", self.retry_spin)
+        execution_form.addRow("Debug artifacts", self.debug_artifacts_checkbox)
+        execution_form.addRow("Node timeout seconds", self.node_timeout_spin)
+        execution_form.addRow("Page/result timeout seconds", self.timeout_spin)
+
+        browser_group = QGroupBox("Browser Window")
+        browser_form = QFormLayout(browser_group)
+        browser_form.addRow("Window width", self.window_width_spin)
+        browser_form.addRow("Window height", self.window_height_spin)
+        browser_form.addRow("Window scale", self.window_scale_spin)
+
+        config_row = QHBoxLayout()
+        config_row.addWidget(execution_group, 2)
+        config_row.addWidget(browser_group, 1)
 
         action_row = QHBoxLayout()
         action_row.addWidget(self.start_button)
         action_row.addWidget(self.stop_button)
         action_row.addStretch(1)
 
-        layout.addLayout(file_row)
-        layout.addWidget(self.preview_label)
-        layout.addWidget(config_group)
+        layout.addWidget(input_group)
+        layout.addLayout(config_row)
         layout.addLayout(action_row)
         layout.addStretch(1)
         return container
@@ -523,17 +543,6 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(refresh_button, alignment=Qt.AlignmentFlag.AlignLeft)
         layout.addWidget(self.history_table)
-        return container
-
-    def _settings_tab(self) -> QWidget:
-        container = QWidget()
-        container.setObjectName("TransparentPage")
-        layout = QVBoxLayout(container)
-        group = QGroupBox("GPM")
-        form = QFormLayout(group)
-        form.addRow("GPM base URL", self.gpm_url_input)
-        layout.addWidget(group)
-        layout.addStretch(1)
         return container
 
     def _apply_design_system(self) -> None:
@@ -793,7 +802,14 @@ class MainWindow(QMainWindow):
         shutil.copy2(source, target)
         try:
             task = load_task(target)
-            self.store.register_task(task.name, task.version, task.module_path, task.description, task.required_columns)
+            self.store.register_task(
+                task.name,
+                task.version,
+                task.module_path,
+                task.description,
+                task.required_columns,
+                task.arguments,
+            )
         except Exception as error:
             QMessageBox.critical(self, "Script load failed", str(error))
             return
@@ -812,7 +828,14 @@ class MainWindow(QMainWindow):
         for module_path in self.tasks_dir.glob("*.py"):
             try:
                 task = load_task(module_path)
-                self.store.register_task(task.name, task.version, task.module_path, task.description, task.required_columns)
+                self.store.register_task(
+                    task.name,
+                    task.version,
+                    task.module_path,
+                    task.description,
+                    task.required_columns,
+                    task.arguments,
+                )
             except Exception:
                 continue
 
@@ -824,6 +847,7 @@ class MainWindow(QMainWindow):
             self.script_module_label.setText("-")
             self.script_columns_label.setText("-")
             self.script_description_label.setText("Load or select a script to inspect its contract.")
+            self._render_task_arguments([])
             return
         task_id = int(current.data(Qt.ItemDataRole.UserRole))
         registered = self.store.get_task(task_id)
@@ -835,6 +859,7 @@ class MainWindow(QMainWindow):
         self.script_columns_label.setText(", ".join(registered.required_columns))
         description: str = registered.description.strip()
         self.script_description_label.setText(description if description != "" else "No script description provided.")
+        self._render_task_arguments(loaded.arguments)
 
     def _browse_excel(self) -> None:
         selected_path, _ = QFileDialog.getOpenFileName(self, "Select Excel file", str(self.base_dir), "Excel (*.xlsx *.xlsm)")
@@ -901,7 +926,7 @@ class MainWindow(QMainWindow):
         self.select_failed_button.setEnabled(False)
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
-        self.run_status_label.setText("Running")
+        self._set_run_status("Running")
         self.worker_thread = threading.Thread(
             target=self._run_in_thread,
             args=(task, selected_profiles, excel_path, config, task_config, self.stop_event),
@@ -914,7 +939,7 @@ class MainWindow(QMainWindow):
             return
         self.stop_event.set()
         self.stop_button.setEnabled(False)
-        self.run_status_label.setText("Stopping")
+        self._set_run_status("Stopping")
         self.log_output.append("stop_requested: active profiles will finish normally; new profiles will not start")
 
     def _run_in_thread(
@@ -972,7 +997,7 @@ class MainWindow(QMainWindow):
             if profile_id != "":
                 self.active_profile_ids.discard(profile_id)
         if event_name == "row_retry":
-            self.run_status_label.setText("Retrying")
+            self._set_run_status("Retrying")
         if event_name == "row_finished":
             profile_id = str(payload.get("profile_id", "")).strip()
             success = bool(payload.get("success", False))
@@ -997,8 +1022,12 @@ class MainWindow(QMainWindow):
             self.active_profile_ids.clear()
             self.start_button.setEnabled(True)
             self.stop_button.setEnabled(False)
-            self.run_status_label.setText(str(payload.get("status", "Idle")) if event_name == "run_finished" else "Error")
+            self._set_run_status(str(payload.get("status", "Idle")) if event_name == "run_finished" else "Error")
             self._refresh_history()
+
+    def _set_run_status(self, status: str) -> None:
+        self.run_status_label.setText(run_status_display_text(status))
+        self.run_status_label.setToolTip(status)
 
     def _refresh_history(self) -> None:
         runs = self.store.list_runs()
@@ -1031,7 +1060,14 @@ class MainWindow(QMainWindow):
         current = self.task_list.currentItem()
         if current is not None:
             return int(current.data(Qt.ItemDataRole.UserRole))
-        return self.store.register_task(task.name, task.version, task.module_path, task.description, task.required_columns)
+        return self.store.register_task(
+            task.name,
+            task.version,
+            task.module_path,
+            task.description,
+            task.required_columns,
+            task.arguments,
+        )
 
     def _runtime_config(self) -> RuntimeConfig:
         config = default_runtime_config()
@@ -1048,7 +1084,66 @@ class MainWindow(QMainWindow):
         )
 
     def _task_config(self) -> dict[str, Any]:
-        return {"enable_debug_artifacts": self.debug_artifacts_checkbox.isChecked()}
+        return {
+            "enable_debug_artifacts": self.debug_artifacts_checkbox.isChecked(),
+            "task_args": self._dynamic_task_arguments(),
+        }
+
+    def _render_task_arguments(self, arguments: list[dict[str, Any]]) -> None:
+        self._clear_dynamic_task_arguments()
+        if len(arguments) == 0:
+            self.dynamic_args_group.setVisible(False)
+            return
+        self.dynamic_args_group.setVisible(True)
+        for argument in arguments:
+            name: str = str(argument.get("name", "")).strip()
+            label: str = str(argument.get("label", name)).strip()
+            argument_type: str = str(argument.get("type", "text")).strip().lower()
+            if name == "":
+                continue
+            widget: QWidget
+            if argument_type == "dropdown":
+                combo = QComboBox()
+                options: list[str] = self._argument_options(argument)
+                for option in options:
+                    combo.addItem(option)
+                default_value: str = str(argument.get("default", "")).strip()
+                default_index: int = combo.findText(default_value)
+                if default_index >= 0:
+                    combo.setCurrentIndex(default_index)
+                widget = combo
+            else:
+                input_widget = QLineEdit()
+                input_widget.setText(str(argument.get("default", "")))
+                widget = input_widget
+            self.dynamic_arg_widgets[name] = widget
+            self.dynamic_args_layout.addRow(label if label != "" else name, widget)
+
+    def _clear_dynamic_task_arguments(self) -> None:
+        while self.dynamic_args_layout.rowCount() > 0:
+            self.dynamic_args_layout.removeRow(0)
+        self.dynamic_arg_widgets.clear()
+
+    def _dynamic_task_arguments(self) -> dict[str, str]:
+        values: dict[str, str] = {}
+        for name, widget in self.dynamic_arg_widgets.items():
+            if isinstance(widget, QComboBox):
+                values[name] = widget.currentText().strip()
+                continue
+            if isinstance(widget, QLineEdit):
+                values[name] = widget.text().strip()
+        return values
+
+    def _argument_options(self, argument: dict[str, Any]) -> list[str]:
+        raw_options: Any = argument.get("options")
+        if not isinstance(raw_options, list):
+            return []
+        options: list[str] = []
+        for raw_option in raw_options:
+            option: str = str(raw_option).strip()
+            if option != "":
+                options.append(option)
+        return options
 
     def _optional_excel_path(self) -> Path | None:
         if not self.use_excel_checkbox.isChecked():

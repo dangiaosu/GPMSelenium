@@ -39,11 +39,17 @@ class TaskContext:
     def wait_ready(self) -> None:
         self.page_wait().until(lambda active_driver: active_driver.execute_script("return document.readyState") == "complete")
 
-    def page_wait(self) -> WebDriverWait:
-        return WebDriverWait(self.driver, self.timeout_seconds)
+    def page_wait(self, timeout: float | None = None) -> WebDriverWait:
+        return WebDriverWait(
+            self.driver,
+            resolve_wait_timeout(timeout, self.config, "page_timeout_seconds", self.timeout_seconds),
+        )
 
-    def node_wait(self) -> WebDriverWait:
-        return WebDriverWait(self.driver, self.node_timeout_seconds)
+    def node_wait(self, timeout: float | None = None) -> WebDriverWait:
+        return WebDriverWait(
+            self.driver,
+            resolve_wait_timeout(timeout, self.config, "node_timeout_seconds", self.node_timeout_seconds),
+        )
 
     def open_new_tab(self, url: str) -> None:
         self.driver.switch_to.new_window("tab")
@@ -85,3 +91,26 @@ def ok(status: str, data: dict[str, Any] | None) -> TaskResult:
 
 def fail(status: str, error: str, data: dict[str, Any] | None) -> TaskResult:
     return TaskResult(success=False, status=status, data=data, error=error)
+
+
+def resolve_wait_timeout(
+    timeout: float | None,
+    config: dict[str, Any],
+    config_key: str,
+    fallback_timeout: float,
+) -> float:
+    if timeout is not None:
+        return validate_wait_timeout(timeout, "timeout")
+    raw_config_timeout: Any = config.get(config_key)
+    if raw_config_timeout is None:
+        return validate_wait_timeout(fallback_timeout, config_key)
+    try:
+        return validate_wait_timeout(float(raw_config_timeout), config_key)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"Invalid wait timeout config; key={config_key}; value={raw_config_timeout}") from error
+
+
+def validate_wait_timeout(timeout: float, source_name: str) -> float:
+    if timeout <= 0:
+        raise ValueError(f"Wait timeout must be greater than zero; source={source_name}; timeout={timeout}")
+    return float(timeout)

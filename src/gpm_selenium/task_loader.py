@@ -22,6 +22,7 @@ class LoadedTask:
     version: str
     description: str
     required_columns: list[str]
+    arguments: list[dict[str, Any]]
     success_status: str
     run: TaskRunCallable
 
@@ -35,6 +36,7 @@ def load_task(module_path: Path) -> LoadedTask:
     description: str = read_optional_string(module, "TASK_DESCRIPTION")
     success_status: str = read_optional_string(module, "STATUS_SUCCESS") or "OKIE"
     required_columns: list[str] = read_required_columns(module, module_path)
+    arguments: list[dict[str, Any]] = read_task_arguments(module, module_path)
     if "ProfileID" not in required_columns:
         required_columns = ["ProfileID", *required_columns]
     run_attribute: Any = getattr(module, "run", None)
@@ -46,6 +48,7 @@ def load_task(module_path: Path) -> LoadedTask:
         version=version,
         description=description,
         required_columns=required_columns,
+        arguments=arguments,
         success_status=success_status,
         run=run_attribute,
     )
@@ -83,3 +86,23 @@ def read_required_columns(module: ModuleType, module_path: Path) -> list[str]:
             raise TaskLoadError(f"Task module REQUIRED_COLUMNS must contain only strings; module_path={module_path}")
         columns.append(item.strip())
     return columns
+
+
+def read_task_arguments(module: ModuleType, module_path: Path) -> list[dict[str, Any]]:
+    raw_value: Any = getattr(module, "TASK_ARGUMENTS", [])
+    if raw_value is None:
+        return []
+    if not isinstance(raw_value, list):
+        raise TaskLoadError(f"Task module TASK_ARGUMENTS must be a list of dictionaries; module_path={module_path}")
+    arguments: list[dict[str, Any]] = []
+    for item in raw_value:
+        if not isinstance(item, dict):
+            raise TaskLoadError(f"Task module TASK_ARGUMENTS must contain only dictionaries; module_path={module_path}")
+        raw_name: Any = item.get("name")
+        raw_type: Any = item.get("type")
+        if not isinstance(raw_name, str) or raw_name.strip() == "":
+            raise TaskLoadError(f"Task argument missing string name; module_path={module_path}")
+        if not isinstance(raw_type, str) or raw_type.strip() == "":
+            raise TaskLoadError(f"Task argument missing string type; argument_name={raw_name}; module_path={module_path}")
+        arguments.append(dict(item))
+    return arguments

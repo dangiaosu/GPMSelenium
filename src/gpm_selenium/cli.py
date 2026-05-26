@@ -58,7 +58,14 @@ def main(arguments: Sequence[str] | None = None) -> NoReturn:
         retry_count=int(namespace.retry_count),
     )
     store = PlatformStore(Path(namespace.db_path))
-    task_id = store.register_task(task.name, task.version, task.module_path, task.description, task.required_columns)
+    task_id = store.register_task(
+        task.name,
+        task.version,
+        task.module_path,
+        task.description,
+        task.required_columns,
+        task.arguments,
+    )
     task_config: dict[str, Any] = {"enable_debug_artifacts": bool(namespace.enable_debug_artifacts)}
     run_task_batch(store, task_id, task, excel_path, config, task_config, print_event, Event())
     raise SystemExit(0)

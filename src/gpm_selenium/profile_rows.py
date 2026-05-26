@@ -34,14 +34,8 @@ def build_rows_from_profiles(
         return [profile_to_row(index + 1, profile, "", {}) for index, profile in enumerate(profiles)]
 
     excel_rows: list[ExcelRow] = read_excel_rows(excel_path, required_columns)
-    rows_by_profile_id: dict[str, ExcelRow] = {
-        row.values.get("ProfileID", "").strip(): row for row in excel_rows if row.values.get("ProfileID", "").strip() != ""
-    }
-    rows_by_profile_name: dict[str, ExcelRow] = {
-        row.values.get("ProfileName", "").strip(): row
-        for row in excel_rows
-        if row.values.get("ProfileName", "").strip() != ""
-    }
+    rows_by_profile_id: dict[str, ExcelRow] = unique_rows_by_column(excel_rows, "ProfileID")
+    rows_by_profile_name: dict[str, ExcelRow] = unique_rows_by_column(excel_rows, "ProfileName")
 
     built_rows: list[ExcelRow] = []
     for index, profile in enumerate(profiles):
@@ -83,6 +77,28 @@ def ensure_profile_only_columns(required_columns: list[str]) -> None:
             "Excel data is required for this task; missing task columns from selected profiles only: "
             f"{missing_data_columns}"
         )
+
+
+def unique_rows_by_column(rows: list[ExcelRow], column_name: str) -> dict[str, ExcelRow]:
+    rows_by_value: dict[str, ExcelRow] = {}
+    duplicate_rows_by_value: dict[str, list[int]] = {}
+    for row in rows:
+        value: str = row.values.get(column_name, "").strip()
+        if value == "":
+            continue
+        existing_row: ExcelRow | None = rows_by_value.get(value)
+        if existing_row is None:
+            rows_by_value[value] = row
+            continue
+        duplicate_rows: list[int] = duplicate_rows_by_value.get(value, [existing_row.row_number])
+        duplicate_rows.append(row.row_number)
+        duplicate_rows_by_value[value] = duplicate_rows
+    if len(duplicate_rows_by_value) > 0:
+        duplicate_details: list[str] = [
+            f"{column_name}={value}; rows={row_numbers}" for value, row_numbers in duplicate_rows_by_value.items()
+        ]
+        raise ProfileRowError(f"Excel contains duplicate profile mapping values; details={duplicate_details}")
+    return rows_by_value
 
 
 def profile_to_row(row_number: int, profile: GpmProfile, status: str, values: dict[str, str]) -> ExcelRow:

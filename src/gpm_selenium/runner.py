@@ -1,24 +1,29 @@
 from __future__ import annotations
 
+import ctypes
 import logging
 import time
-from dataclasses import dataclass
+from ctypes import wintypes
+from dataclasses import dataclass, replace
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, Thread
 from typing import Any, Callable
 
 import requests
+from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.remote.webdriver import WebDriver
 
 from gpm_selenium.contracts import ProfileContext, TaskContext, TaskResult
 from gpm_selenium.excel import (
+    ExcelDataError,
     ExcelRow,
     initialize_status_column,
     pending_rows,
     read_excel_rows,
     row_profile_id,
     row_profile_name,
+    write_result_data,
     write_status,
 )
 from gpm_selenium.gpm import (
@@ -58,6 +63,22 @@ class RuntimeConfig:
 
 
 @dataclass(frozen=True)
+class ScreenWorkArea:
+    x: int
+    y: int
+    width: int
+    height: int
+
+
+@dataclass(frozen=True)
+class WindowLayout:
+    columns: int
+    rows: int
+    window_width: int
+    window_height: int
+
+
+@dataclass(frozen=True)
 class RowRunResult:
     row: ExcelRow
     profile_id: str
@@ -66,12 +87,14 @@ class RowRunResult:
     status: str
     error: str
     attempt_count: int
+    data: dict[str, Any] | None
 
 
 StatusWriter = Callable[[RowRunResult], None]
 
 
 def default_runtime_config() -> RuntimeConfig:
+    screen: ScreenWorkArea = detect_primary_screen_work_area()
     return RuntimeConfig(
         gpm_base_url="http://127.0.0.1:19995",
         request_retries=3,
@@ -83,10 +106,10 @@ def default_runtime_config() -> RuntimeConfig:
         window_width=800,
         window_height=600,
         window_scale=0.8,
-        screen_width=1920,
-        screen_height=1080,
-        window_start_x=0,
-        window_start_y=0,
+        screen_width=screen.width,
+        screen_height=screen.height,
+        window_start_x=screen.x,
+        window_start_y=screen.y,
         window_padding=10,
         addination_args="",
         attach_retries=3,
@@ -113,6 +136,7 @@ def run_task_batch(
         task,
         str(excel_path),
         queued_rows,
+        excel_path,
         build_excel_status_writer(excel_path),
         config,
         task_config,
@@ -144,6 +168,7 @@ def run_selected_profiles_batch(
         task,
         source_label,
         queued_rows,
+        excel_path,
         status_writer,
         config,
         task_config,
@@ -158,6 +183,7 @@ def run_prepared_rows(
     task: LoadedTask,
     source_label: str,
     queued_rows: list[ExcelRow],
+    excel_path: Path | None,
     status_writer: StatusWriter | None,
     config: RuntimeConfig,
     task_config: dict[str, Any],
@@ -196,36 +222,36 @@ def run_prepared_rows(
             result: RowRunResult = result_queue.get(timeout=0.2)
         except Empty:
             continue
-        results.append(result)
-        if result.success:
+        persisted_result: RowRunResult = persist_row_result(excel_path, status_writer, result)
+        results.append(persisted_result)
+        if persisted_result.success:
             success_count += 1
         else:
             failure_count += 1
-        if status_writer is not None:
-            status_writer(result)
         store.add_run_item(
             run_id,
-            result.row.row_number,
-            result.profile_id,
-            result.profile_name,
-            result.status,
-            result.success,
-            result.error,
+            persisted_result.row.row_number,
+            persisted_result.profile_id,
+            persisted_result.profile_name,
+            persisted_result.status,
+            persisted_result.success,
+            persisted_result.error,
         )
         callback(
             "row_finished",
             {
                 "run_id": run_id,
-                "row_number": result.row.row_number,
-                "profile_id": result.profile_id,
-                "profile_name": result.profile_name,
-                "status": result.status,
-                "success": result.success,
+                "row_number": persisted_result.row.row_number,
+                "profile_id": persisted_result.profile_id,
+                "profile_name": persisted_result.profile_name,
+                "status": persisted_result.status,
+                "success": persisted_result.success,
+                "error": persisted_result.error,
                 "success_count": success_count,
                 "failure_count": failure_count,
                 "completed_count": len(results),
                 "total_count": len(queued_rows),
-                "attempt_count": result.attempt_count,
+                "attempt_count": persisted_result.attempt_count,
             },
         )
 
@@ -249,6 +275,23 @@ def run_prepared_rows(
         },
     )
     return results
+
+
+def persist_row_result(
+    excel_path: Path | None,
+    status_writer: StatusWriter | None,
+    result: RowRunResult,
+) -> RowRunResult:
+    if status_writer is None:
+        return result
+    try:
+        if excel_path is not None and result.success and result.data is not None and len(result.data) > 0:
+            write_result_data(excel_path, result.row.row_number, result.data)
+        status_writer(result)
+        return result
+    except ExcelDataError as error:
+        status: str = f"ExcelDataError: {error}"
+        return replace(result, success=False, status=status, error=status)
 
 
 def build_excel_status_writer(excel_path: Path) -> StatusWriter:
@@ -368,6 +411,7 @@ def process_row_attempt(
     session = requests.Session()
     client: GpmClient = GpmClient(config.gpm_base_url, session, config.request_timeout_seconds, config.request_retries)
     driver: WebDriver | None = None
+    context: TaskContext | None = None
     profile_started: bool = False
     try:
         window_options: GpmWindowOptions = build_window_options(config, worker_number - 1)
@@ -385,11 +429,16 @@ def process_row_attempt(
             },
         )
         driver = create_driver(started_profile, config.attach_retries)
-        context: TaskContext = TaskContext(
+        context_config: dict[str, Any] = {
+            **task_config,
+            "page_timeout_seconds": config.page_timeout_seconds,
+            "node_timeout_seconds": config.node_timeout_seconds,
+        }
+        context = TaskContext(
             driver=driver,
             profile=ProfileContext(profile_id=profile_id, profile_name=profile_name, row_number=row.row_number),
             logger=logger,
-            config=task_config,
+            config=context_config,
             artifacts_dir=Path("artifacts") / f"run_{run_id}" / f"row_{row.row_number}",
             timeout_seconds=config.page_timeout_seconds,
             node_timeout_seconds=config.node_timeout_seconds,
@@ -404,6 +453,53 @@ def process_row_attempt(
             status=task_result.status,
             error=task_result.error or "",
             attempt_count=attempt_number,
+            data=task_result.data,
+        )
+    except RuntimeError as error:
+        if context is None:
+            status: str = build_failure_status(error)
+            return RowRunResult(
+                row=row,
+                profile_id=profile_id,
+                profile_name=profile_name,
+                success=False,
+                status=status,
+                error=status,
+                attempt_count=attempt_number,
+                data=None,
+            )
+        business_error_message: str = str(error).strip() if str(error).strip() != "" else type(error).__name__
+        logger.warning(
+            "task_business_error",
+            extra={
+                "profile_id": profile_id,
+                "profile_name": profile_name,
+                "row_number": row.row_number,
+                "attempt_number": attempt_number,
+                "error_type": type(error).__name__,
+                "error": business_error_message,
+            },
+        )
+        callback(
+            "business_error",
+            {
+                "run_id": run_id,
+                "row_number": row.row_number,
+                "profile_id": profile_id,
+                "profile_name": profile_name,
+                "attempt_number": attempt_number,
+                "error": business_error_message,
+            },
+        )
+        return RowRunResult(
+            row=row,
+            profile_id=profile_id,
+            profile_name=profile_name,
+            success=False,
+            status="FAILED",
+            error=business_error_message,
+            attempt_count=attempt_number,
+            data=business_error_data(context, error),
         )
     except Exception as error:
         status: str = build_failure_status(error)
@@ -415,6 +511,7 @@ def process_row_attempt(
             status=status,
             error=status,
             attempt_count=attempt_number,
+            data=None,
         )
     finally:
         if driver is not None:
@@ -453,6 +550,7 @@ def stopped_row_result(row: ExcelRow, attempt_count: int) -> RowRunResult:
         status=status,
         error=status,
         attempt_count=attempt_count,
+        data=None,
     )
 
 
@@ -461,23 +559,98 @@ def build_failure_status(error: Exception) -> str:
     return type(error).__name__ if message == "" else f"{type(error).__name__}: {message}"
 
 
+def business_error_data(context: TaskContext, error: RuntimeError) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "error_type": type(error).__name__,
+        "error": str(error),
+        "url": context.driver.current_url,
+    }
+    try:
+        screenshot_path: Path | None = context.screenshot(f"business_error_{context.profile.profile_id}")
+        if screenshot_path is not None:
+            data["screenshot"] = str(screenshot_path)
+    except WebDriverException as screenshot_error:
+        data["screenshot_error"] = f"{type(screenshot_error).__name__}: {screenshot_error}"
+    try:
+        html_path: Path | None = context.save_html(f"business_error_{context.profile.profile_id}")
+        if html_path is not None:
+            data["html"] = str(html_path)
+    except (OSError, WebDriverException) as html_error:
+        data["html_error"] = f"{type(html_error).__name__}: {html_error}"
+    return data
+
+
 def build_window_options(config: RuntimeConfig, slot_number: int) -> GpmWindowOptions:
-    columns: int = calculate_window_columns(config)
-    row_number: int = slot_number // columns
-    column_number: int = slot_number % columns
+    layout: WindowLayout = calculate_window_layout(config)
+    row_number: int = slot_number // layout.columns
+    column_number: int = slot_number % layout.columns
     position: WindowPosition = WindowPosition(
-        x=config.window_start_x + column_number * (config.window_width + config.window_padding),
-        y=config.window_start_y + row_number * (config.window_height + config.window_padding),
+        x=config.window_start_x + column_number * (layout.window_width + config.window_padding),
+        y=config.window_start_y + row_number * (layout.window_height + config.window_padding),
     )
-    size: WindowSize = WindowSize(width=config.window_width, height=config.window_height)
+    size: WindowSize = WindowSize(width=layout.window_width, height=layout.window_height)
     addination_args: str | None = config.addination_args if config.addination_args.strip() != "" else None
     return GpmWindowOptions(size=size, position=position, scale=config.window_scale, addination_args=addination_args)
 
 
 def calculate_window_columns(config: RuntimeConfig) -> int:
-    available_width: int = max(1, config.screen_width - config.window_start_x)
-    window_track_width: int = max(1, config.window_width + config.window_padding)
-    return max(1, available_width // window_track_width)
+    return calculate_window_layout(config).columns
+
+
+def calculate_window_layout(config: RuntimeConfig) -> WindowLayout:
+    worker_count: int = max(1, config.max_workers)
+    padding: int = max(0, config.window_padding)
+    available_width: int = max(1, config.screen_width)
+    available_height: int = max(1, config.screen_height)
+    preferred_width: int = max(1, config.window_width)
+    preferred_height: int = max(1, config.window_height)
+    best_layout: WindowLayout | None = None
+    best_score: tuple[int, int, int, int, int] | None = None
+    for columns in range(1, worker_count + 1):
+        rows: int = ceil_div(worker_count, columns)
+        cell_width: int = (available_width - padding * (columns - 1)) // columns
+        cell_height: int = (available_height - padding * (rows - 1)) // rows
+        if cell_width <= 0 or cell_height <= 0:
+            continue
+        window_width: int = min(preferred_width, cell_width)
+        window_height: int = min(preferred_height, cell_height)
+        preferred_fit: int = 1 if window_width == preferred_width and window_height == preferred_height else 0
+        area: int = window_width * window_height
+        score: tuple[int, int, int, int, int] = (preferred_fit, area, -rows, columns, window_width)
+        if best_score is None or score > best_score:
+            best_score = score
+            best_layout = WindowLayout(columns=columns, rows=rows, window_width=window_width, window_height=window_height)
+    if best_layout is None:
+        raise RuntimeError(
+            "Unable to calculate GPM window layout; "
+            f"screen_width={config.screen_width}; screen_height={config.screen_height}; "
+            f"max_workers={config.max_workers}; window_padding={config.window_padding}"
+        )
+    return best_layout
+
+
+def ceil_div(value: int, divisor: int) -> int:
+    if divisor <= 0:
+        raise ValueError(f"Divisor must be greater than zero; divisor={divisor}")
+    return -(-value // divisor)
+
+
+def detect_primary_screen_work_area() -> ScreenWorkArea:
+    if not hasattr(ctypes, "windll"):
+        raise RuntimeError("Primary screen work area detection requires Windows.")
+    rect = wintypes.RECT()
+    spi_getworkarea: int = 48
+    result: int = ctypes.windll.user32.SystemParametersInfoW(spi_getworkarea, 0, ctypes.byref(rect), 0)
+    if result == 0:
+        raise RuntimeError("Windows SystemParametersInfoW failed while reading primary screen work area.")
+    width: int = int(rect.right - rect.left)
+    height: int = int(rect.bottom - rect.top)
+    if width <= 0 or height <= 0:
+        raise RuntimeError(
+            "Windows primary screen work area is invalid; "
+            f"left={rect.left}; top={rect.top}; right={rect.right}; bottom={rect.bottom}"
+        )
+    return ScreenWorkArea(x=int(rect.left), y=int(rect.top), width=width, height=height)
 
 
 def runtime_config_to_dict(config: RuntimeConfig) -> dict[str, Any]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -94,25 +95,106 @@ def is_success_status(status: str) -> bool:
 
 
 def initialize_status_column(excel_path: Path) -> int:
-    workbook: openpyxl.Workbook = openpyxl.load_workbook(excel_path)
+    workbook: openpyxl.Workbook = load_writable_workbook(excel_path, "initialize_status_column", 1)
     try:
         worksheet: openpyxl.worksheet.worksheet.Worksheet = workbook.active
         status_column: int = find_or_create_status_column(worksheet)
-        workbook.save(excel_path)
+        save_workbook(workbook, excel_path, "initialize_status_column", 1)
         return status_column
     finally:
         workbook.close()
 
 
 def write_status(excel_path: Path, row_number: int, status: str) -> None:
-    workbook: openpyxl.Workbook = openpyxl.load_workbook(excel_path)
+    workbook: openpyxl.Workbook = load_writable_workbook(excel_path, "write_status", row_number)
     try:
         worksheet: openpyxl.worksheet.worksheet.Worksheet = workbook.active
         status_column: int = find_or_create_status_column(worksheet)
         worksheet.cell(row=row_number, column=status_column, value=status)
-        workbook.save(excel_path)
+        save_workbook(workbook, excel_path, "write_status", row_number)
     finally:
         workbook.close()
+
+
+def write_result_data(excel_path: Path, row_number: int, data: dict[str, Any]) -> None:
+    if row_number <= 1:
+        raise ExcelDataError(f"Excel result row must be a data row; excel_path={excel_path}; row_number={row_number}")
+    if len(data) == 0:
+        return
+    workbook: openpyxl.Workbook = load_writable_workbook(excel_path, "write_result_data", row_number)
+    try:
+        worksheet: openpyxl.worksheet.worksheet.Worksheet = workbook.active
+        column_indexes: dict[str, int] = find_or_create_result_columns(worksheet, data)
+        for column_name, raw_value in data.items():
+            if column_name not in column_indexes:
+                continue
+            worksheet.cell(row=row_number, column=column_indexes[column_name], value=to_excel_cell_value(raw_value))
+        save_workbook(workbook, excel_path, "write_result_data", row_number)
+    finally:
+        workbook.close()
+
+
+def load_writable_workbook(excel_path: Path, operation_name: str, row_number: int) -> openpyxl.Workbook:
+    try:
+        return openpyxl.load_workbook(excel_path)
+    except PermissionError as error:
+        raise ExcelDataError(
+            f"Excel file is locked; close it before running automation; "
+            f"operation={operation_name}; excel_path={excel_path}; row_number={row_number}"
+        ) from error
+    except OSError as error:
+        raise ExcelDataError(
+            f"Could not open Excel file for writing; operation={operation_name}; "
+            f"excel_path={excel_path}; row_number={row_number}; error={error}"
+        ) from error
+
+
+def save_workbook(workbook: openpyxl.Workbook, excel_path: Path, operation_name: str, row_number: int) -> None:
+    try:
+        workbook.save(excel_path)
+    except PermissionError as error:
+        raise ExcelDataError(
+            f"Excel file is locked; close it before running automation; "
+            f"operation={operation_name}; excel_path={excel_path}; row_number={row_number}"
+        ) from error
+    except OSError as error:
+        raise ExcelDataError(
+            f"Could not save Excel file; operation={operation_name}; "
+            f"excel_path={excel_path}; row_number={row_number}; error={error}"
+        ) from error
+
+
+def find_or_create_result_columns(
+    worksheet: openpyxl.worksheet.worksheet.Worksheet,
+    data: dict[str, Any],
+) -> dict[str, int]:
+    column_indexes: dict[str, int] = {}
+    for column_name in data:
+        normalized_column_name: str = column_name.strip()
+        if normalized_column_name == "":
+            raise ExcelDataError(f"Result data contains an empty column name; keys={list(data.keys())}")
+        column_indexes[column_name] = find_or_create_column(worksheet, normalized_column_name)
+    return column_indexes
+
+
+def find_or_create_column(worksheet: openpyxl.worksheet.worksheet.Worksheet, column_name: str) -> int:
+    for column_index in range(1, worksheet.max_column + 1):
+        raw_header: Any = worksheet.cell(row=1, column=column_index).value
+        if raw_header is not None and str(raw_header).strip().lower() == column_name.lower():
+            return column_index
+    column_index = worksheet.max_column + 1
+    worksheet.cell(row=1, column=column_index, value=column_name)
+    return column_index
+
+
+def to_excel_cell_value(value: Any) -> str | int | float | bool | None:
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
 def read_sheet_values(excel_path: Path) -> tuple[list[tuple[Any, ...]], tuple[Any, ...]]:

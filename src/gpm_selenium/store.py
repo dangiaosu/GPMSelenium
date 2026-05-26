@@ -17,6 +17,7 @@ class RegisteredTask:
     module_path: str
     description: str
     required_columns: list[str]
+    arguments: list[dict[str, Any]]
 
 
 class PlatformStore:
@@ -32,19 +33,21 @@ class PlatformStore:
         module_path: Path,
         description: str,
         required_columns: list[str],
+        arguments: list[dict[str, Any]],
     ) -> int:
         with self._connection() as connection:
             cursor = connection.execute(
                 """
-                insert into tasks(name, version, module_path, description, required_columns, enabled)
-                values (?, ?, ?, ?, ?, 1)
+                insert into tasks(name, version, module_path, description, required_columns, arguments_json, enabled)
+                values (?, ?, ?, ?, ?, ?, 1)
                 on conflict(name, version) do update set
                     module_path = excluded.module_path,
                     description = excluded.description,
                     required_columns = excluded.required_columns,
+                    arguments_json = excluded.arguments_json,
                     enabled = 1
                 """,
-                (name, version, str(module_path), description, json.dumps(required_columns)),
+                (name, version, str(module_path), description, json.dumps(required_columns), json.dumps(arguments)),
             )
             row = connection.execute(
                 "select id from tasks where name = ? and version = ?",
@@ -55,14 +58,23 @@ class PlatformStore:
     def list_tasks(self) -> list[RegisteredTask]:
         with self._connection() as connection:
             rows = connection.execute(
-                "select id, name, version, module_path, description, required_columns from tasks where enabled = 1 order by name"
+                """
+                select id, name, version, module_path, description, required_columns, arguments_json
+                from tasks
+                where enabled = 1
+                order by name
+                """
             ).fetchall()
         return [self._registered_task_from_row(row) for row in rows]
 
     def get_task(self, task_id: int) -> RegisteredTask:
         with self._connection() as connection:
             row = connection.execute(
-                "select id, name, version, module_path, description, required_columns from tasks where id = ?",
+                """
+                select id, name, version, module_path, description, required_columns, arguments_json
+                from tasks
+                where id = ?
+                """,
                 (task_id,),
             ).fetchone()
         if row is None:
@@ -139,6 +151,7 @@ class PlatformStore:
                     module_path text not null,
                     description text not null,
                     required_columns text not null,
+                    arguments_json text not null default '[]',
                     enabled integer not null,
                     unique(name, version)
                 );
@@ -180,6 +193,10 @@ class PlatformStore:
                 );
                 """
             )
+            try:
+                connection.execute("alter table tasks add column arguments_json text not null default '[]'")
+            except sqlite3.OperationalError:
+                pass
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -193,6 +210,8 @@ class PlatformStore:
 
     def _registered_task_from_row(self, row: sqlite3.Row) -> RegisteredTask:
         required_columns: list[str] = json.loads(str(row["required_columns"]))
+        raw_arguments: str = str(row["arguments_json"]) if "arguments_json" in row.keys() else "[]"
+        arguments: list[dict[str, Any]] = json.loads(raw_arguments)
         return RegisteredTask(
             id=int(row["id"]),
             name=str(row["name"]),
@@ -200,4 +219,5 @@ class PlatformStore:
             module_path=str(row["module_path"]),
             description=str(row["description"]),
             required_columns=required_columns,
+            arguments=arguments,
         )

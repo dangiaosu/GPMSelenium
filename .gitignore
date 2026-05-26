@@ -1,0 +1,61 @@
+# Python environments
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Python cache/build output
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local user/session/runtime data
+.session/
+Discussion/
+*.sqlite3
+*.sqlite
+*.db
+*.sqlite3-journal
+*.db-journal
+*.xlsx
+*.xls
+*.xlsm
+*.xlsb
+*.ods
+*.csv
+*.log
+*.har
+
+# Debug/runtime artifacts
+artifacts/
+*.png
+!github.png
+!telegram.png
+!facebook.png
+*.html
+!extension_record_flow/*.html
+
+# Secrets and local machine files
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.token
+*.secret
+secrets.*
+private.*
+seed*.txt
+*.heapsnapshot
+.DS_Store
+Thumbs.db
